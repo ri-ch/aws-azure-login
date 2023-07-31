@@ -2,8 +2,9 @@ import _ from "lodash";
 import Bluebird from "bluebird";
 import inquirer, { QuestionCollection, Question } from "inquirer";
 import zlib from "zlib";
-import AWS from "aws-sdk";
+import { STS, STSClientConfig } from "@aws-sdk/client-sts";
 import cheerio from "cheerio";
+import { NodeHttpHandler } from "@aws-sdk/node-http-handler";
 import { v4 } from "uuid";
 import puppeteer, { HTTPRequest } from "puppeteer";
 import querystring from "querystring";
@@ -1010,42 +1011,48 @@ export const login = {
     region: string | undefined
   ): Promise<void> {
     console.log(`Assuming role ${role.roleArn}`);
+
+    const config: Partial<STSClientConfig> = {};
+
     if (process.env.https_proxy) {
-      AWS.config.update({
-        httpOptions: {
-          agent: proxy(process.env.https_proxy),
-        },
+      config.requestHandler = new NodeHttpHandler({
+        httpsAgent: proxy(process.env.https_proxy),
       });
     }
 
     if (awsNoVerifySsl) {
-      AWS.config.update({
-        httpOptions: {
-          agent: new https.Agent({
-            rejectUnauthorized: false,
-          }),
-        },
+      config.requestHandler = new NodeHttpHandler({
+        httpsAgent: new https.Agent({
+          rejectUnauthorized: false,
+        }),
       });
     }
 
     if (region) {
-      AWS.config.update({
-        region,
-      });
+      config.region = region;
     }
 
-    const sts = new AWS.STS();
-    const res = await sts
-      .assumeRoleWithSAML({
-        PrincipalArn: role.principalArn,
-        RoleArn: role.roleArn,
-        SAMLAssertion: assertion,
-        DurationSeconds: Math.round(durationHours * 60 * 60),
-      })
-      .promise();
+    const sts = new STS(config);
+
+    const res = await sts.assumeRoleWithSAML({
+      PrincipalArn: role.principalArn,
+      RoleArn: role.roleArn,
+      SAMLAssertion: assertion,
+      DurationSeconds: Math.round(durationHours * 60 * 60),
+    });
 
     if (!res.Credentials) {
       debug("Unable to get security credentials from AWS");
+      return;
+    }
+
+    if (
+      !res.Credentials.AccessKeyId ||
+      !res.Credentials.SecretAccessKey ||
+      !res.Credentials.SessionToken ||
+      !res.Credentials.Expiration
+    ) {
+      debug("Unable to get details from response");
       return;
     }
 
